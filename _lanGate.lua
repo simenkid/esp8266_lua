@@ -1,11 +1,8 @@
 local lanGate = {}
+
 local broadAddr = '255.255.255.255'
 local broadPort = 2658
-local servAddr = {
-    ip = '',
-    port = null,
-    family = ''
-};
+local servAddr = { ip = '', port = null, family = '' }
 
 function lanGate.serverAddrReq (callback)
     local client = net.createConnection(net.UDP, 0)
