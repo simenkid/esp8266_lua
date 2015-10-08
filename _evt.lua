@@ -75,31 +75,15 @@ emit = function(self, event, ...)
 end
 
 
-local events = {}
 
-events.EventEmitter = function(tbl)
-
-    assert(type(tbl) == "table", "The argument should be a table")
-    rawset(tbl, IDENTIFIER, (not not useWeakReference))
-
-    tbl.on = addListener
-    tbl.addListener = addListener
-    tbl.once = once
-    tbl.removeListener = removeListener
-    tbl.removeAllListeners = removeAllListeners
-    tbl.emit = emit
-    return tbl
-  end
-
-return events
 
 --[[
 --]]
 addListener = function (self, event, listener)
       -- local useWeakReference = rawget(self, IDENTIFIER)
       -- local listeners = findOrCreateListenerTable(self, event, useWeakReference)
-      local listeners = findOrCreateListenerTable(self, event)
-      rawset(listeners, listener, true)
+      local listenersTbl = findOrCreateListenerTable(self, event)
+      rawset(listenersTbl, listener, true)
       return self
 end
 

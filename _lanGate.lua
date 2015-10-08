@@ -1,61 +1,46 @@
+local events = require 'events'
+local timers = require 'timers'
 local lanGate = {}
-
 local broadAddr = '255.255.255.255'
 local broadPort = 2658
 local servAddr = { ip = '', port = null, family = '' }
 
 function lanGate.serverAddrReq (callback)
     local client = net.createConnection(net.UDP, 0)
-    local tmrid
+    local req = { type = 'REQ', cmd = 'SERV_IP' }
 
-    client:on('receive', function (sock, strData)
-        local msg = cjson.decode(strData)
-
-        if (msg.type == 'RSP' && msg.cmd == 'SERV_IP') then
-            servAddr.ip = msg.data.ip
-            servAddr.port = msg.data.port
-            servAddr.family = msg.data.family
+    lanGate.sendMessageWithRetry({ client = client, req = req,
+        port = broadPort, addr = broadAddr }, 5, 2000,
+        function (err, rxMsg)
+            servAddr.ip = rxMsg.data.ip
+            servAddr.port = rxMsg.data.port
+            servAddr.family = rxMsg.data.family
+            callback(nil, servAddr)
         end
-
-        -- process.nextTick(function () {
-        --     callback(null, servAddr);
-        -- });
-
-        tmr.stop(tmrid)
-        client:close()
-    end)
-
-    client:on('timeout', function () 
-        -- process.nextTick(function () {
-        --     callback(new Error('RSP Timeout'), null);
-        -- })
-    end)
-
-    client:connect(broadPort, broadAddr)
-
-    local req = {
-        type = 'REQ',
-        cmd = 'SERV_IP'
-    }
-
-    
-
-    tmrid = lanGate.sendMessageWithRetry({
-        client =  client,
-        req = req,
-        port = broadPort,
-        addr = broadAddr
-    }, 5, 2000);
+    )
 end
 
-function lanGate.serviceInfoReq ()
+function lanGate.serviceInfoReq (serv, callback)
+    local client = net.createConnection(net.UDP, 0)
+    local req = { type = 'REQ', cmd = 'SERV_IP', service = serv }
+
+    if (servAddr.ip == '') then
+        callback(error('Server ip is empty'), nil)
+        return
+    end
+ 
+    lanGate.sendMessageWithRetry({ client = client, req = req,
+        port = servAddr.port or broadPort, addr = servAddr.ip }, 5, 1200,
+        function (err, rxMsg)
+            callback(nil, rxMsg.data)
+        end
+    )
 end
 
 function lanGate.sendMessage (client, msg, port, addr, cb)
+    client:connect(port, addr)
     client:send(cjson.encode(msg), function (sent)
-        if (type(cb) == 'function') then
-            cb()
-        end
+        if (type(cb) == 'function') then cb() end
     end)
 end
 
@@ -66,22 +51,36 @@ function lanGate.sendMessageWithRetry (cMsg, maxRetries, interv, callback)
     local addr = cMsg.addr
     local tmrId = 6
     local retries = 0
-    local cb;
+    local sendScheduler
 
-    gateClient.sendMessage(client, msg, port, addr, callback);
+    client.auxEvt = events.EventEmitter()
+    client.auxEvt:on('timeout', function ()
+        client:close()
+        callback(error('RSP Timeout'), nil)
+    end)
 
-    tmr.alarm(tmrId, interv, 1, function ()
-        if (retries == maxRetries) then
-            tmr.stop(6)
-            -- client.emit('timeout');
+    client:on('receive', function (sock, strData)
+        local rxMsg = cjson.decode(strData)
+        if (rxMsg.type == 'RSP' and rxMsg.cmd == msg.cmd) then
+            timers.clear(sendScheduler)
             client:close()
-        else
-            gateClient.sendMessage(client, msg, port, addr)
-            retries = retries + 1
+            callback(nil, rxMsg)
         end
     end)
 
-    return tmrId
+    gateClient.sendMessage(client, msg, port, addr, callback);
+
+    sendScheduler = timers.setInterval(function ()
+        if (retries == maxRetries) then
+            timers.clear(sendScheduler)
+            client.auxEvt:emit('timeout')
+        else
+            gateClient.sendMessage(client, msg, port, addr)
+            retries = retries + 1
+        end        
+    end)
+
+   return sendScheduler
 end
 
 return lanGate
