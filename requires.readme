@@ -1,0 +1,10 @@
+What do we need on NodeMcu
+
+update: 12 Oct. 2015
+
+1. init.lua
+2. nwkMgr
+2. LanGate Client
+3. mqtt client
+4. timers module
+5. event emitter module
