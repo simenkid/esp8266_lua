@@ -31,6 +31,7 @@ function evHub:rm (ev, lsn)
     end
 
     if (#evTable == 0) then self._on[ev] = nil end
+    collectgarbage("collect")
 end
 
 function evHub:rmAll (ev)
@@ -49,11 +50,11 @@ function evHub:rmAll (ev)
     else
         for _ev, _lsnTbl in pairs(self._on) do evHub:rmAll(_ev) end
     end
+    collectgarbage("collect")
 end
 
 
 function evHub:emit (ev, ...)
-    assert(ev, "invalid event:" .. tostring(ev))
     local evTable = self:evTable(ev)
     for _, lsn in pairs(evTable) do
         local status, err = pcall(lsn, ...)
@@ -70,6 +71,7 @@ function evHub:emit (ev, ...)
     for i, lsn in ipairs(evTable) do table.remove(evTable, i) end
 
     self._on[ev] = nil
+    collectgarbage("collect")
 end
 
 return evHub

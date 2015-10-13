@@ -49,7 +49,8 @@ function langate.requestIp (interval, retries, callback)
     local tId
     local repeats = 0
     
-    tId = timers.alarm(function () 
+    local doReq
+    doReq = function () 
         repeats = repeats + 1
         if (wifi.sta.getip() == nil) then
             print("IP is unavaiable, please wait...")
@@ -57,19 +58,25 @@ function langate.requestIp (interval, retries, callback)
                 print("Get no ip address! Please check the ssid and password settings.")
                 timers.clear(tId)
                 callback('Got no ip.', nil)
+                doReq = nil
+                collectgarbage('collect')
             end
         else
             timers.clear(tId)
             callback(nil, wifi.sta.getip())
+            doReq = nil
+            collectgarbage('collect')
         end
-    end, interval, 1)
+    end
+    tId = timers.alarm(doReq, interval, 1)
 end
 
 function langate.requestCoatAddr (callback)
     local client = net.createConnection(net.UDP, 0)
     local req = { type = 'REQ', cmd = 'SERV_IP' }
 
-    langate.sendMessage(client, req, broadPort, broadAddr, 5, 2000, function (err, rxMsg)
+    local afterSend
+    afterSend = function (err, rxMsg)
         if (err ~= nil) then
             print(err)
         else
@@ -78,7 +85,11 @@ function langate.requestCoatAddr (callback)
             langate.coatAddr.family = rxMsg.data.family
             callback(nil, rxMsg)
         end
-    end)
+        afterSend = nil
+        collectgarbage('collect')
+    end
+
+    langate.sendMessage(client, req, broadPort, broadAddr, 5, 2000, afterSend)
 end
 
 function langate.serviceInfoReq (serv, callback)
@@ -90,12 +101,16 @@ function langate.serviceInfoReq (serv, callback)
         return
     end
  
-    langate.sendMessage(client, req, langate.coatAddr.port or broadPort, langate.coatAddr.ip, 5, 1200,
-        function (err, rxMsg)
-            if (err ~= nil) then print(err)
-            else  callback(nil, rxMsg.data) end
-        end
-    )
+    local afterSend
+    afterSend = function (err, rxMsg)
+        if (err ~= nil) then print(err)
+        else  callback(nil, rxMsg.data) end
+
+        afterSend = nil
+        collectgarbage('collect')
+    end
+    langate.sendMessage(client, req, langate.coatAddr.port or broadPort, 
+                        langate.coatAddr.ip, 5, 1200, afterSend)
 end
 
 function langate.sendMessage (client, msg, port, addr, maxRetries, interv, callback)
@@ -107,23 +122,33 @@ function langate.sendMessage (client, msg, port, addr, maxRetries, interv, callb
         if (rxMsg.type == 'RSP' and rxMsg.cmd == msg.cmd) then
             timers.clear(tId)
             client:close()
+            msg = nil
+            client = nil
             callback(nil, rxMsg)
-        end
+            collectgarbage("collect")
+        end        
     end)
 
     client:connect(port, addr)
     client:send(cjson.encode(msg))
 
-    tId = timers.alarm(function ()
+    local doReq
+    doReq = function ()
         if (retries == maxRetries) then
             timers.clear(tId)
             client:close()
             callback('RSP Timeout', nil)
+            msg = nil
+            doReq = nil
+            collectgarbage()
         else
             client:send(cjson.encode(msg))
             retries = retries + 1
         end
-    end, interv, 1)
+    end
+
+    tId = timers.alarm(doReq, interv, 1)
+    collectgarbage()
 end
 
 return langate
