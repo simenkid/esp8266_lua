@@ -93,7 +93,7 @@ function langate.serviceInfoReq (serv, callback)
     langate.sendMessage(client, req, langate.coatAddr.port or broadPort, langate.coatAddr.ip, 5, 1200,
         function (err, rxMsg)
             if (err ~= nil) then print(err)
-            else callback(nil, rxMsg.data) end
+            else  callback(nil, rxMsg.data) end
         end
     )
 end
