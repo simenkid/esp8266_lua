@@ -1,17 +1,22 @@
+local langate = {}
+local broadAddr = '255.255.255.255'
+local broadPort = 2658
+local servAddr = { ip = '', port = nil, family = '' }
 
 -- timers utils
 local timers = {
-    status = { [3] = nil, [4] = nil, [5] = nil, [6] = nil }
+    status = { [3] = false, [4] = false, [5] = false, [6] = false }
 }
 
 function timers.getIdleTimerId()
-    local tid
-    if (timers.status[3] == nil) then tid = 3
-    elseif (timers.status[4] == nil) then tid = 4
-    elseif (timers.status[5] == nil) then tid = 5
-    elseif (timers.status[6] == nil) then tid = 6
-    else tid = nil end
+    local tid = nil
 
+    for k, v in pairs() do
+        if (v == false) then
+            tid = k
+            break
+        end
+    end
     return tid
 end
 
@@ -23,9 +28,7 @@ function timers.alarm(fn, intvl, rpt)
     status[idleId] = true
 
     tmr.alarm(idleId, intvl, rpt, function ()
-        if (rpt == 0) then
-            status[idleId] = nil
-        end
+        if (rpt == 0) then timers.status[idleId] = false end
         fn()
     end)
 
@@ -34,22 +37,21 @@ end
 
 function timers.clear(tmrId)
     tmr.stop(tmrId)
-    status[tmrId] = nil
+    timers.status[tmrId] = false
 end
 
 -- nwkMgr
-local langate = {}
+
 
 function langate.startAsStation (ssid, pwd, interval, repeats, callback)
-    print("Setting up wifi mode as a STATION")
     wifi.setmode(wifi.STATION)
     wifi.sta.config(ssid, pwd)
     wifi.sta.connect()
 
-    nwkMgr.findCoatIp(interval, repeats, callback)
+    langate.requestIp(interval, repeats, callback)
 end
 
-function langate.findCoatIp (interval, repeats, callback)
+function langate.requestIp (interval, repeats, callback)
     local tId
     local retries = 0
     
@@ -57,9 +59,11 @@ function langate.findCoatIp (interval, repeats, callback)
         retries = retries + 1
         if (wifi.sta.getip() == nil) then
             print("IP is unavaiable, please wait...")
-            if (retries == repeats) {
+            if (retries == repeats) then
                 print("Get no ip address! Please check the ssid and password settings.")
-            }
+                timers.clear(tId)
+                callback(error('Got no ip.'))
+            end
         else
             timers.clear(tId)
             print("  >> Mode: " .. wifi.getmode())
@@ -67,28 +71,21 @@ function langate.findCoatIp (interval, repeats, callback)
             print("  >> MAC: " .. wifi.sta.getmac())
             print("  >> IP: " .. wifi.sta.getip())
             print("  >> STATUS: " .. wifi.sta.status())
-            callback()        
+            callback(nil, wifi.sta.getip())
         end
     end, interval, repeats)
 end
 
-local broadAddr = '255.255.255.255'
-local broadPort = 2658
-local servAddr = { ip = '', port = nil, family = '' }
-
-function langate.serverAddrReq (callback)
+function langate.requestCoatAddr (callback)
     local client = net.createConnection(net.UDP, 0)
     local req = { type = 'REQ', cmd = 'SERV_IP' }
 
-    langate.sendMessageWithRetry({ client = client, req = req,
-        port = broadPort, addr = broadAddr }, 5, 2000,
-        function (err, rxMsg)
-            servAddr.ip = rxMsg.data.ip
-            servAddr.port = rxMsg.data.port
-            servAddr.family = rxMsg.data.family
-            callback(nil, servAddr)
-        end
-    )
+    langate.sendMessageWithRetry( client, req, broadPort, broadAddr, 5, 2000, function (err, rxMsg)
+        servAddr.ip = rxMsg.data.ip
+        servAddr.port = rxMsg.data.port
+        servAddr.family = rxMsg.data.family
+        callback(nil, servAddr)
+    end)
 end
 
 function langate.serviceInfoReq (serv, callback)
@@ -115,25 +112,19 @@ function langate.sendMessage (client, msg, port, addr, cb)
     end)
 end
 
-function langate.sendMessageWithRetry (cMsg, maxRetries, interv, callback)
-    local client = cMsg.client
-    local msg = cMsg.msg
-    local port = cMsg.port
-    local addr = cMsg.addr
-    local tmrId = 6
-    local retries = 0
-    local sendScheduler
+evHub:on('timeout', function (cl, cb)
+    cl:close()
+    cb(error('RSP Timeout'), nil)
+end)
 
-    client.auxEvt = events.EventEmitter()
-    client.auxEvt:on('timeout', function ()
-        client:close()
-        callback(error('RSP Timeout'), nil)
-    end)
+function langate.sendMessageWithRetry (client, msg, port, addr, maxRetries, interv, callback)
+    local retries = 0
+    local tId
 
     client:on('receive', function (sock, strData)
         local rxMsg = cjson.decode(strData)
         if (rxMsg.type == 'RSP' and rxMsg.cmd == msg.cmd) then
-            timers.clear(sendScheduler)
+            timers.clear(tId)
             client:close()
             callback(nil, rxMsg)
         end
@@ -141,15 +132,97 @@ function langate.sendMessageWithRetry (cMsg, maxRetries, interv, callback)
 
     gateClient.sendMessage(client, msg, port, addr, callback);
 
-    sendScheduler = timers.setInterval(function ()
+    tId = timers.alarm(function ()
         if (retries == maxRetries) then
-            timers.clear(sendScheduler)
-            client.auxEvt:emit('timeout')
+            timers.clear(tId)
+            evHub.emit('timeout', client, callback)
         else
             gateClient.sendMessage(client, msg, port, addr)
             retries = retries + 1
-        end        
-    end)
-
-   return sendScheduler
+        end
+    end, interv, 1)
 end
+
+-- evHub
+local evHub = {
+    ._on = {}
+}
+
+function evHub:evTable(ev)
+    if (type(self._on[ev]) ~= 'table') then self._on[ev] = {} end
+    return self._on[ev]
+end
+
+function evHub:on (ev, lsn)
+    local evTable = self:evTable(ev)
+    table.insert(evTable, lsn)
+end
+
+function evHub:once(ev, lsn)
+    local ev = ev .. ':once'
+    local evTable = self:evTable(ev)
+
+    table.insert(evTable, listener)
+end
+
+function evHub:rm (ev, lsn)
+    local evTable = self:evTable(ev)
+
+    for i, l in ipairs(evTable) do
+        if l == lsn then table.remove(evTable, i) end
+    end
+
+    if (#evTable == 0) then self._on[ev] = nil end
+
+    ev = ev .. ':once'
+    evTable = self:evTable(ev)
+
+    for i, l in ipairs(evTable) do
+        if l == lsn then table.remove(evTable, i) end
+    end
+
+    if (#evTable == 0) then self._on[ev] = nil end
+end
+
+function evHub:rmAll (ev)
+    if ev ~= nil then
+        local evTable = self:evTable(ev)
+
+        for i, lsn in ipairs(evTable) do table.remove(evTable, i) end
+
+        self._on[ev] = nil
+
+        ev = ev .. ':once'
+        evTable = self:evTable(ev)
+
+        for i, lsn in ipairs(evTable) do table.remove(evTable, i) end
+        self._on[ev] = nil
+    else
+        for _ev, _lsnTbl in pairs(self._on) do evHub:rmAll(_ev) end
+    end
+end
+
+
+function evHub:emit (ev, ...)
+    assert(ev, "invalid event:" .. tostring(ev))
+    local evTable = self:evTable(ev)
+
+    for _, lsn in pairs(evTable) do
+        local status, err = pcall(lsn, ...)
+        if not (status) then print(tostring(self) .. "event emit err: " .. tostring(err)) end
+    end
+
+    ev = ev .. ':once'
+    evTable = self:evTable(ev)
+
+    for _, lsn in pairs(evTable) do
+        local status, err = pcall(lsn, ...)
+        if not (status) then print("[events::" .. tostring(self) .. "::emit] err:" .. tostring(err)) end
+    end
+
+    for i, lsn in ipairs(evTable) do table.remove(evTable, i) end
+
+    self._on[ev] = nil
+end
+
+return evHub
