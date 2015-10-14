@@ -1,6 +1,6 @@
 local evHub = require 'evHub'
 local timers = require 'timers'
-local langate = require 'langate'
+local langate = nil
 
 local wConf = { ssid = 'sivann', pwd = '26583302' }
 local coatIp = ''
@@ -9,61 +9,58 @@ local mClient = nil
 local LED = 1   -- GPIO5, D13
 
 gpio.mode(LED, gpio.OUTPUT, gpio.PULLUP)
---[[
- *************************************************************************
- * Main App                                                              *
- ************************************************************************* ]]
--- print(collectgarbage("count"))
+
 function unrequire(m)
     package.loaded[m] = nil
     _G[m] = nil
     collectgarbage("collect")
 end
 
-print(collectgarbage("count"))
-evHub:once('online', function (ip)
-    print(collectgarbage("count"))
-    print('ESP8266 is now online with ip: ' .. ip)
+-- Network Initialization Steps
+evHub:once('step1_startSTA', function (ip)
+    langate = require 'langate'
+    langate.startAsStation(wConf.ssid, wConf.pwd, 1000, 10, function (err, ip)
+        if (err ~= nil) then print (err)
+        else
+            print('Now online: ' .. ip)
+            evHub:emit('step2_findCoat', ip)
+        end
+    end)
+end)
+
+evHub:once('step2_findCoat', function (ip)
     print('Searching for coat server...')
     langate.requestCoatAddr(function (err, servAddr)
         if (err ~= nil) then print(err)
         else
             coatIp = servAddr.ip
-            evHub:emit('got_coat', servAddr)
+            print('Coat alive: '.. coatIp .. '@' .. servAddr.port)
+            evHub:emit('step3_queryMqtt', servAddr)
         end
     end)
 end)
 
-evHub:once('got_coat', function (servAddr)
-    print(collectgarbage("count"))
-    print('Coat found: '.. coatIp .. '@' .. servAddr.port)
+evHub:once('step3_queryMqtt', function (servAddr)
     print('Querying mqtt broker...')
-    print(collectgarbage("count"))
     langate.serviceInfoReq('mqtt', function (err, serv)
-        if (err ~= nil) then print(err) end
-        if (serv.name == 'mqtt') then evHub:emit('mqtt_info', serv) end
+        if (err ~= nil) then print(err)
+        else
+            if (serv.name == 'mqtt') then
+                print('MQTT broker alive: ' .. coatIp .. '@' .. serv.port)
+                mqttPort = serv.port
+                evHub:emit('step4_connect_broker', { ip = coatIp, port = mqttPort })
+            end
+        end
     end)
 end)
 
-evHub:once('mqtt_info', function (serv)
-    print(collectgarbage("count"))
-    print('MQTT broker found: ' .. coatIp .. '@' .. serv.port)
-    print(collectgarbage("count"))
-    mqttPort = serv.port
-    evHub:emit('mqtt_connect', { ip = coatIp, port = mqttPort })
-end)
-
-evHub:once('mqtt_connect', function (serv)
-    print(collectgarbage("count"))
+evHub:once('step4_connect_broker', function (serv)
     -- unload langate, since we don't need it anymore
     langate = nil
     unrequire('langate')
-    collectgarbage("collect")
-    print(collectgarbage("count"))
 
     print('Connecting mqtt broker...')
     local cId = wifi.sta.getmac()
-    print(collectgarbage("count"))
     mClient = mqtt.Client(cId, 120, "", "")
     mClient:lwt("/lwt", "offline", 0, 0)
 
@@ -72,7 +69,6 @@ evHub:once('mqtt_connect', function (serv)
     end)
 
     mClient:on("offline", function(con) print ("offline") end)
-    print(collectgarbage("count"))
     mClient:on("message", function(conn, topic, data)
         print(topic .. ":" )
         if data ~= nil then print(data) end
@@ -82,18 +78,26 @@ evHub:once('mqtt_connect', function (serv)
     -- for auto-reconnect: m:connect("192.168.11.118", 1880, 0, 1)
     mClient:connect(coatIp, mqttPort, 0, 0, function(conn) 
         mClient:subscribe("/presence", 0, function(conn)
-            print("subscribe success")
-            mClient:publish("/presence", "hello ESP8266", 0, 0, function(conn) print("sent") end)
+            timers.setTimeout(function ()
+                evHub:emit('step5_pub', mClient)
+            end, 3000)
+            print("subscribe success")           
         end)
     end)
-
 end)
 
 
+evHub:once('step5_pub', function (mc)
+    local c = 0
+    timers.setInterval(function ()
+        mc:publish("/presence", "hello count: " .. c, 0, 0, function(conn) print("sent") end)
+        c = c + 1
+        print(collectgarbage("count"))
+    end, 5000)
+end)
+
 if (wConf.ssid ~= nil and wConf.pwd ~= nil) then
-    langate.startAsStation(wConf.ssid, wConf.pwd, 1000, 10, function (err, ip)
-        evHub:emit('online', ip)
-    end)
+    evHub:emit('step1_startSTA')
 else
     print("\n")
     print("Please set the ssid and passwrod of the wireless router in 'init.lua'")
