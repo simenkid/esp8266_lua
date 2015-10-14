@@ -1,8 +1,9 @@
 local evHub = require 'evHub'
+local timers = require 'timers'
 local langate = require 'langate'
 
 local wConf = { ssid = 'sivann', pwd = '26583302' }
-local coatAddr = langate.coatAddr
+local coatIp = ''
 local mqttPort = nil
 local mClient = nil
 local LED = 1   -- GPIO5, D13
@@ -12,20 +13,32 @@ gpio.mode(LED, gpio.OUTPUT, gpio.PULLUP)
  *************************************************************************
  * Main App                                                              *
  ************************************************************************* ]]
+-- print(collectgarbage("count"))
+function unrequire(m)
+    package.loaded[m] = nil
+    _G[m] = nil
+    collectgarbage("collect")
+end
+
+print(collectgarbage("count"))
 evHub:once('online', function (ip)
+    print(collectgarbage("count"))
     print('ESP8266 is now online with ip: ' .. ip)
     print('Searching for coat server...')
-
     langate.requestCoatAddr(function (err, servAddr)
         if (err ~= nil) then print(err)
-        else evHub:emit('got_coat', servAddr) end
+        else
+            coatIp = servAddr.ip
+            evHub:emit('got_coat', servAddr)
+        end
     end)
 end)
 
 evHub:once('got_coat', function (servAddr)
-    print('Coat found: '.. coatAddr.ip .. '@' .. coatAddr.port)
+    print(collectgarbage("count"))
+    print('Coat found: '.. coatIp .. '@' .. servAddr.port)
     print('Querying mqtt broker...')
-
+    print(collectgarbage("count"))
     langate.serviceInfoReq('mqtt', function (err, serv)
         if (err ~= nil) then print(err) end
         if (serv.name == 'mqtt') then evHub:emit('mqtt_info', serv) end
@@ -33,15 +46,24 @@ evHub:once('got_coat', function (servAddr)
 end)
 
 evHub:once('mqtt_info', function (serv)
-    print('MQTT broker found: ' .. coatAddr.ip .. '@' .. serv.port)
+    print(collectgarbage("count"))
+    print('MQTT broker found: ' .. coatIp .. '@' .. serv.port)
+    print(collectgarbage("count"))
     mqttPort = serv.port
-    evHub:emit('mqtt_connect', { ip = coatAddr.ip, port = mqttPort })
+    evHub:emit('mqtt_connect', { ip = coatIp, port = mqttPort })
 end)
 
 evHub:once('mqtt_connect', function (serv)
+    print(collectgarbage("count"))
+    -- unload langate, since we don't need it anymore
+    langate = nil
+    unrequire('langate')
+    collectgarbage("collect")
+    print(collectgarbage("count"))
+
     print('Connecting mqtt broker...')
     local cId = wifi.sta.getmac()
-
+    print(collectgarbage("count"))
     mClient = mqtt.Client(cId, 120, "", "")
     mClient:lwt("/lwt", "offline", 0, 0)
 
@@ -50,7 +72,7 @@ evHub:once('mqtt_connect', function (serv)
     end)
 
     mClient:on("offline", function(con) print ("offline") end)
-
+    print(collectgarbage("count"))
     mClient:on("message", function(conn, topic, data)
         print(topic .. ":" )
         if data ~= nil then print(data) end
@@ -58,7 +80,7 @@ evHub:once('mqtt_connect', function (serv)
     -- m:connect( host, port, secure, auto_reconnect, function(client) )
     -- for secure: m:connect("192.168.11.118", 1880, 1, 0)
     -- for auto-reconnect: m:connect("192.168.11.118", 1880, 0, 1)
-    mClient:connect(langate.coatAddr.ip, mqttPort, 0, 0, function(conn) 
+    mClient:connect(coatIp, mqttPort, 0, 0, function(conn) 
         mClient:subscribe("/presence", 0, function(conn)
             print("subscribe success")
             mClient:publish("/presence", "hello ESP8266", 0, 0, function(conn) print("sent") end)
